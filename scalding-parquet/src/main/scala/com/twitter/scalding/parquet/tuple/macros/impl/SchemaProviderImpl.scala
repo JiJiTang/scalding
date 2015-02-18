@@ -1,20 +1,14 @@
 package com.twitter.scalding.parquet.tuple.macros.impl
 
 import scala.language.experimental.macros
-import com.twitter.bijection.macros.impl.IsCaseClassImpl
 import parquet.schema.MessageType
 
 import scala.reflect.macros.Context
 
 object SchemaProviderImpl {
 
-  def toParquetSchemaImp[T](c: Context)(implicit T: c.WeakTypeTag[T]): c.Expr[MessageType] = {
-
+  class ParquetSchemaCaseClassVisitor[TREE](val c: Context) extends CaseClassVisitor[TREE] {
     import c.universe._
-
-    if (!IsCaseClassImpl.isCaseClassType(c)(T.tpe))
-      c.abort(c.enclosingPosition, s"""We cannot enforce ${T.tpe} is a case class, either it is not a case class or this macro call is possibly enclosed in a class.
-        This will mean the macro is operating on a non-resolved type.""")
 
     case class Extractor(tpe: Type, toTree: Tree)
     case class Builder(toTree: Tree = q"")
@@ -26,59 +20,43 @@ object SchemaProviderImpl {
     implicit val extractorLiftable = new Liftable[Extractor] {
       def apply(b: Extractor): Tree = b.toTree
     }
-
+    
     val REPETITION_REQUIRED = q"ParquetType.Repetition.REQUIRED"
     val REPETITION_OPTIONAL = q"ParquetType.Repetition.OPTIONAL"
 
-    def createPrimitiveTypeField(isOption: Boolean, primitiveType: Tree, fieldName: String): List[Tree] =
-      List(q"""new PrimitiveType(${getRepetition(isOption)}, $primitiveType, $fieldName)""")
+    def getRepetition(isOption: Boolean): TREE = if (isOption) REPETITION_OPTIONAL else REPETITION_REQUIRED
 
-    def getRepetition(isOption: Boolean): Tree = if (isOption) REPETITION_OPTIONAL else REPETITION_REQUIRED
+    def createPrimitiveTypeField(isOption: Boolean, primitiveType: String, fieldName: String): List[TREE] =
+      List(q"""new PrimitiveType(${getRepetition(isOption)}, q"$primitiveType", $fieldName)""")
 
-    def matchField(fieldType: Type, outerName: String, fieldName: String, isOption: Boolean): List[Tree] = {
-      val parquetFieldName = s"$outerName$fieldName"
-      fieldType match {
-        case tpe if tpe =:= typeOf[String] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.BINARY", parquetFieldName)
-        case tpe if tpe =:= typeOf[Boolean] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.BOOLEAN", parquetFieldName)
-        case tpe if tpe =:= typeOf[Short] || tpe =:= typeOf[Int] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.INT32", parquetFieldName)
-        case tpe if tpe =:= typeOf[Long] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.INT64", parquetFieldName)
-        case tpe if tpe =:= typeOf[Float] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.FLOAT", parquetFieldName)
-        case tpe if tpe =:= typeOf[Double] =>
-          createPrimitiveTypeField(isOption, q"PrimitiveType.PrimitiveTypeName.DOUBLE", parquetFieldName)
-        case tpe if tpe.erasure =:= typeOf[Option[Any]] && isOption =>
-          c.abort(c.enclosingPosition, s"Nested options do not make sense being mapped onto a tuple fields in cascading.")
-        case tpe if tpe.erasure =:= typeOf[Option[Any]] =>
-          val innerType = tpe.asInstanceOf[TypeRefApi].args.head
-          matchField(innerType, outerName, fieldName, true)
-        case tpe if IsCaseClassImpl.isCaseClassType(c)(tpe) => expandMethod(tpe, s"$parquetFieldName.", isOption = false)
-        case _ => c.abort(c.enclosingPosition, s"Case class $T is not pure primitives or nested case classes")
-      }
-    }
+    override def visitInt(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.INT32", s"$outerName$fieldName")
 
-    def expandMethod(outerTpe: Type, outerName: String, isOption: Boolean): List[Tree] = {
-      outerTpe
-        .declarations
-        .collect { case m: MethodSymbol if m.isCaseAccessor => m }
-        .flatMap { accessorMethod =>
-          val fieldName = accessorMethod.name.toTermName.toString
-          val fieldType = accessorMethod.returnType
-          matchField(fieldType, outerName, fieldName, false)
-        }.toList
-    }
+    override def visitDouble(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.DOUBLE", s"$outerName$fieldName")
 
-    def expandCaseClass(outerTpe: Type, outerName: String, isOption: Boolean): Tree = {
-      val expanded = expandMethod(outerTpe, outerName, isOption)
-      if (expanded.isEmpty) c.abort(c.enclosingPosition, s"Case class $outerTpe has no primitive types we were able to extract")
-      val messageTypeName = s"${outerTpe}".split("\\.").last
-      q"""import parquet.schema.{MessageType, PrimitiveType, Type => ParquetType}
-          new MessageType($messageTypeName, Array.apply[ParquetType](..$expanded):_*)"""
-    }
+    override def visitLong(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.INT64", s"$outerName$fieldName")
 
-    c.Expr[MessageType](expandCaseClass(T.tpe, "", isOption = false))
+    override def visitBoolean(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.BOOLEAN", s"$outerName$fieldName")
+
+    override def visitFloat(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.FLOAT", s"$outerName$fieldName")
+
+    override def visitShort(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.INT32", s"$outerName$fieldName")
+
+    override def visitString(outerName: String, fieldName: String, optional: Boolean): List[TREE] =
+      createPrimitiveTypeField(optional, "PrimitiveType.PrimitiveTypeName.BINARY", s"$outerName$fieldName")
+  }
+
+  def toParquetSchemaImp[T](c: Context)(implicit T: c.WeakTypeTag[T]): c.Expr[MessageType] = {
+    import c.universe._
+    val schemaVisitor = new ParquetSchemaCaseClassVisitor[c.universe.Tree](c)
+    val trees = new CaseClassVisitable[T].accept[c.universe.Tree](c)(schemaVisitor)(T)
+    val messageTypeName = s"${T.tpe}".split("\\.").last
+    c.Expr[MessageType](q"""import parquet.schema.{MessageType, PrimitiveType, Type => ParquetType}
+          new MessageType($messageTypeName, Array.apply[ParquetType](..$trees):_*)""")
   }
 }
