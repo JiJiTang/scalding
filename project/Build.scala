@@ -1,13 +1,12 @@
 package scalding
 
-import sbt._
-import Keys._
-import sbtassembly.Plugin._
-import AssemblyKeys._
-import com.typesafe.tools.mima.plugin.MimaPlugin.mimaDefaultSettings
-import com.typesafe.tools.mima.plugin.MimaKeys._
-import scalariform.formatter.preferences._
 import com.typesafe.sbt.SbtScalariform._
+import com.typesafe.tools.mima.plugin.MimaKeys._
+import com.typesafe.tools.mima.plugin.MimaPlugin.mimaDefaultSettings
+import sbt.Keys._
+import sbt._
+import sbtassembly.Plugin.AssemblyKeys._
+import sbtassembly.Plugin._
 
 import scala.collection.JavaConverters._
 
@@ -194,6 +193,7 @@ object ScaldingBuild extends Build {
     scaldingCommons,
     scaldingAvro,
     scaldingParquet,
+    scaldingParquetMacros,
     scaldingParquetScrooge,
     scaldingHRaven,
     scaldingRepl,
@@ -287,6 +287,22 @@ object ScaldingBuild extends Build {
     )
   ).dependsOn(scaldingCore)
 
+  lazy val scaldingParquetMacros = module("parquet-macros").settings(
+    libraryDependencies <++= (scalaVersion) { scalaVersion => Seq(
+      // see https://issues.apache.org/jira/browse/PARQUET-143 for exclusions
+      "com.twitter" % "parquet-cascading" % parquetVersion
+        exclude("com.twitter", "parquet-pig")
+        exclude("com.twitter.elephantbird", "elephant-bird-pig")
+        exclude("com.twitter.elephantbird", "elephant-bird-core"),
+      "org.slf4j" % "slf4j-api" % slf4jVersion,
+      "org.apache.hadoop" % "hadoop-core" % hadoopVersion % "provided",
+      "org.scala-lang" % "scala-reflect" % scalaVersion,
+      "com.twitter" %% "bijection-macros" % bijectionVersion,
+      "com.twitter" %% "chill-bijection" % chillVersion
+    ) ++ (if(isScala210x(scalaVersion)) Seq("org.scalamacros" %% "quasiquotes" % "2.0.1") else Seq())
+    }, addCompilerPlugin("org.scalamacros" % "paradise" % "2.0.1" cross CrossVersion.full))
+    .dependsOn(scaldingCore, scaldingHadoopTest)
+
   lazy val scaldingParquet = module("parquet").settings(
     libraryDependencies <++= (scalaVersion) { scalaVersion => Seq(
       // see https://issues.apache.org/jira/browse/PARQUET-143 for exclusions
@@ -298,10 +314,11 @@ object ScaldingBuild extends Build {
       "org.slf4j" % "slf4j-api" % slf4jVersion,
       "org.apache.hadoop" % "hadoop-core" % hadoopVersion % "provided",
       "org.scala-lang" % "scala-reflect" % scalaVersion,
-      "com.twitter" %% "bijection-macros" % bijectionVersion
+      "com.twitter" %% "bijection-macros" % bijectionVersion,
+      "com.twitter" %% "chill-bijection" % chillVersion
     ) ++ (if(isScala210x(scalaVersion)) Seq("org.scalamacros" %% "quasiquotes" % "2.0.1") else Seq())
-  }, addCompilerPlugin("org.scalamacros" % "paradise" % "2.0.1" cross CrossVersion.full))
-    .dependsOn(scaldingCore, scaldingHadoopTest)
+  }, addCompilerPlugin("org.scalamacros" % "paradise" % "2.0.1" cross CrossVersion.full)).dependsOn(scaldingCore,
+      scaldingHadoopTest, scaldingParquetMacros)
 
   def scaldingParquetScroogeDeps(version: String) = {
     if (isScala210x(version))

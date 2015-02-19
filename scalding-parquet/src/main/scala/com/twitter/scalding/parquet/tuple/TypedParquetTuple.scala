@@ -1,58 +1,97 @@
 package com.twitter.scalding.parquet.tuple
 
-import _root_.parquet.cascading.ParquetTupleScheme
-import _root_.parquet.schema.MessageType
 import cascading.scheme.Scheme
-import cascading.tuple.Fields
 import com.twitter.scalding._
 import com.twitter.scalding.parquet.HasFilterPredicate
+import com.twitter.scalding.parquet.tuple.scheme.{ParquetWriteSupport, ParquetReadSupport, TypedParquetTupleScheme}
+
+import scala.reflect.ClassTag
 
 /**
- * Typed parquet tuple source/sink, if used as sink, user should provide parquet schema definition.
+ * Typed parquet tuple source/sink
  * @author Jian Tang
  */
 object TypedParquetTuple {
+  /** 
+   * Create readable typed parquet source.
+   * Here is an example: 
+   *
+   *  case class SampleClassB(string: String, int: Int, double: Option[Double], a: SampleClassA)
+   *
+   *  class ReadSupport extends ParquetReadSupport[SampleClassB] {
+   *    override val tupleConverter: ParquetTupleConverter = Macros.caseClassParquetTupleConverter[SampleClassB]
+   *    override val rootSchema: String = Macros.caseClassParquetSchema[SampleClassB]
+   *  }
+   *
+   *  val parquetTuple = TypedParquetTuple[SampleClassB, ReadSupport](Seq(outputPath)) 
+   *
+   * @param paths paths of parquet I/O
+   * @param t Read support type tag
+   * @tparam T Tuple type
+   * @tparam R Read support type
+   * @return a typed parquet source.
+   */
+  def apply[T, R <: ParquetReadSupport[T]](paths: Seq[String])(implicit t: ClassTag[R]) =
+    new TypedFixedPathParquetTuple[T, R, ParquetWriteSupport[T]](paths, t.runtimeClass.asInstanceOf[Class[R]], null)
 
-  def apply[T: Manifest: TupleConverter: TupleSetter](paths: Seq[String])(implicit sinkFields: Fields, messageType: MessageType) =
-    new TypedFixedPathParquetTuple[T](paths, Fields.ALL, sinkFields, Some(messageType.toString))
+  /**
+   * Create sinkable typed parquet source.
+   * Here is an example: 
+   *  
+   *  case class SampleClassB(string: String, int: Int, double: Option[Double], a: SampleClassA)
+   *  
+   *  class WriteSupport extends ParquetWriteSupport[SampleClassB] {
+   *    override val fieldValues: (SampleClassB) => Map[Int, Any] = Macros.caseClassFieldValues[SampleClassB]
+   *    override val rootSchema: String = Macros.caseClassParquetSchema[SampleClassB]
+   *  }
+   *    
+   *  val parquetTuple = TypedParquetTuple[SampleClassB, WriteSupport](Seq(outputPath))
+   *
+   * @param paths paths of parquet I/O
+   * @param t Read support type tag
+   * @tparam T Tuple type
+   * @tparam W Write support type
+   * @return a typed parquet source.
+   */
+  def apply[T, W <: ParquetWriteSupport[T]](paths: Seq[String])(implicit t: ClassTag[W]) =
+    new TypedFixedPathParquetTuple[T, ParquetReadSupport[T], W](paths, null, t.runtimeClass.asInstanceOf[Class[W]])
 
-  def apply[T: Manifest: TupleConverter: TupleSetter](paths: Seq[String], sourceFields: Fields) =
-    new TypedFixedPathParquetTuple[T](paths, sourceFields)
+  /**
+   * Create typed parquet source supports both R/W.
+   * @param paths paths of  parquet I/O
+   * @param r Read support type tag
+   * @param w Write support type tag
+   * @tparam T Tuple type
+   * @tparam R Read support type
+   * @return a typed parquet source.
+   */
+  def apply[T, R <: ParquetReadSupport[T], W <: ParquetWriteSupport[T]](paths: Seq[String])(implicit r: ClassTag[R], 
+        w: ClassTag[W]) = {
+    val readSupport = r.runtimeClass.asInstanceOf[Class[R]]
+    val writeSupport = w.runtimeClass.asInstanceOf[Class[W]]
+    new TypedFixedPathParquetTuple[T, R, W](paths, readSupport, writeSupport)
+  }
+
 }
 
 /**
  * Typed Parquet tuple source/sink.
  */
-trait TypedParquetTuple[T] extends FileSource with Mappable[T] with TypedSink[T] with HasFilterPredicate {
+trait TypedParquetTuple[T, R <: ParquetReadSupport[T], W <: ParquetWriteSupport[T]] extends FileSource
+  with Mappable[T] with TypedSink[T] with HasFilterPredicate {
 
-  implicit val tupleConverter: TupleConverter[T]
+  val readSupport: Class[R]
+  val writeSupport: Class[W]
 
-  implicit val tupleSetter: TupleSetter[T]
+  override def converter[U >: T] = TupleConverter.asSuperConverter[T, U](TupleConverter.singleConverter[T])
 
-  override def converter[U >: T] = TupleConverter.asSuperConverter[T, U](tupleConverter)
-
-  override def setter[U <: T] = TupleSetter.asSubSetter[T, U](tupleSetter)
-
-  /**
-   * Parquet schema definition for mapping with type T.
-   */
-  def parquetSchema: Option[String]
+  override def setter[U <: T] = TupleSetter.asSubSetter[T, U](TupleSetter.singleSetter[T])
 
   override def hdfsScheme = {
-    val scheme = parquetSchema match {
-      case Some(messageType) => new ParquetTupleScheme(sourceFields, sinkFields, messageType)
-      case _ =>
-        withFilter match {
-          case Some(filterPredicate) => new ParquetTupleScheme(filterPredicate, sourceFields)
-          case _ => new ParquetTupleScheme(sourceFields)
-        }
-    }
+    val scheme = new TypedParquetTupleScheme[T](readSupport, writeSupport, withFilter)
     HadoopSchemeInstance(scheme.asInstanceOf[Scheme[_, _, _, _, _]])
   }
 }
 
-class TypedFixedPathParquetTuple[T](paths: Seq[String],
-  override val sourceFields: Fields = Fields.ALL,
-  override val sinkFields: Fields = Fields.UNKNOWN,
-  override val parquetSchema: Option[String] = None)(implicit override val tupleConverter: TupleConverter[T],
-    override val tupleSetter: TupleSetter[T]) extends FixedPathSource(paths: _*) with TypedParquetTuple[T]
+class TypedFixedPathParquetTuple[T, R <: ParquetReadSupport[T], W <: ParquetWriteSupport[T]](val paths: Seq[String],
+  val readSupport: Class[R], val writeSupport: Class[W]) extends FixedPathSource(paths: _*) with TypedParquetTuple[T, R, W]
