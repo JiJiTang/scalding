@@ -19,7 +19,7 @@ trait TupleFieldConverter[+T] extends Converter {
   var hasValue: Boolean = false
 
   /**
-   *reset the converter state, make it ready for reading next column value.
+   * reset the converter state, make it ready for reading next column value.
    */
   def reset(): Unit
 }

@@ -19,6 +19,12 @@ case class SampleClassF(a: Option[SampleClassA])
 
 case class SampleClassG(a: Int, b: Option[SampleClassB], c: Double)
 
+case class SampleClassH(a: Int, b: Option[List[Double]])
+
+case class SampleClassI(a: Int, b: List[SampleClassA])
+
+case class SampleClassJ(a: Int, b: Option[List[Double]])
+
 class MacroUnitTests extends WordSpec with Matchers with MockitoSugar {
 
   "Macro case class parquet schema generator" should {
@@ -100,6 +106,11 @@ class MacroUnitTests extends WordSpec with Matchers with MockitoSugar {
         |  required int32 h;
         |}
       """.stripMargin)
+
+      println(Macros.caseClassParquetSchema[SampleClassH])
+      println(Macros.caseClassParquetSchema[SampleClassI])
+      println(Macros.caseClassParquetSchema[SampleClassJ])
+
       schema shouldEqual expectedSchema
     }
 

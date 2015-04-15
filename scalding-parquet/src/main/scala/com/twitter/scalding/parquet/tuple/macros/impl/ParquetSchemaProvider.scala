@@ -15,11 +15,17 @@ object ParquetSchemaProvider {
     def matchField(fieldType: Type, fieldName: String, isOption: Boolean): List[Tree] = {
       val REPETITION_REQUIRED = q"_root_.parquet.schema.Type.Repetition.REQUIRED"
       val REPETITION_OPTIONAL = q"_root_.parquet.schema.Type.Repetition.OPTIONAL"
+      val REPETITION_REPEATED = q"_root_.parquet.schema.Type.Repetition.REPEATED"
 
       def repetition: Tree = if (isOption) REPETITION_OPTIONAL else REPETITION_REQUIRED
 
       def createPrimitiveTypeField(primitiveType: Tree): List[Tree] =
         List(q"""new _root_.parquet.schema.PrimitiveType($repetition, $primitiveType, $fieldName)""")
+
+      def createListGroupType(innerFieldsTypes: List[Tree]): List[Tree] = List(q"""
+          new _root_.parquet.schema.GroupType($REPETITION_REPEATED, "list",
+                   _root_.scala.Array.apply[_root_.parquet.schema.Type](..$innerFieldsTypes):_*)
+        """)
 
       fieldType match {
         case tpe if tpe =:= typeOf[String] =>
@@ -37,6 +43,11 @@ object ParquetSchemaProvider {
         case tpe if tpe.erasure =:= typeOf[Option[Any]] =>
           val innerType = tpe.asInstanceOf[TypeRefApi].args.head
           matchField(innerType, fieldName, isOption = true)
+        case tpe if tpe.erasure =:= typeOf[List[Any]] =>
+          val innerType = tpe.asInstanceOf[TypeRefApi].args.head
+          val innerFieldsTypes = matchField(innerType, "element", false)
+          List(q"""new _root_.parquet.schema.GroupType($repetition, $fieldName, _root_.parquet.schema.OriginalType.LIST,
+                        _root_.scala.Array.apply[_root_.parquet.schema.Type](..${createListGroupType(innerFieldsTypes)}):_*)""")
         case tpe if IsCaseClassImpl.isCaseClassType(c)(tpe) =>
           List(q"""new _root_.parquet.schema.GroupType($repetition, $fieldName,
                         _root_.scala.Array.apply[_root_.parquet.schema.Type](..${expandMethod(tpe)}):_*)""")
